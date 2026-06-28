@@ -1,0 +1,39 @@
+diff --git a/src/rtl_433.c b/src/rtl_433.c
+index 965e33ad..ec595bec 100644
+--- a/src/rtl_433.c
++++ b/src/rtl_433.c
+@@ -28,6 +28,21 @@
+ #include <errno.h>
+ #include <signal.h>
+ 
++#ifdef __EMSCRIPTEN__
++#include <emscripten.h>
++// Browser live-stream stdin: instead of a blocking fread() on a FILE*, pull CU8
++// bytes from the host page's sample queue and suspend the wasm (via JSPI, or
++// Asyncify as a fallback) until data is available. Module.rtl433ReadStdin(len)
++// resolves to a Uint8Array of up to `len` bytes; an empty array means EOF, which
++// we use to stop the decode loop cleanly. See src/decoder.ts on the JS side.
++EM_ASYNC_JS(unsigned long, rtl433_host_read, (uint8_t *buf, unsigned long len), {
++    const chunk = await Module["rtl433ReadStdin"](len);
++    if (!chunk || chunk.length === 0) return 0;
++    HEAPU8.set(chunk, buf);
++    return chunk.length;
++});
++#endif
++
+ #include "rtl_433.h"
+ #include "r_private.h"
+ #include "r_device.h"
+@@ -2202,6 +2217,12 @@ int main(int argc, char **argv) {
+                     }
+                     n_read *= 2; // convert to byte count
+                 } else {
++#ifdef __EMSCRIPTEN__
++                    if (in_file == stdin) {
++                        // Live browser stream: async, suspending host read.
++                        n_read = rtl433_host_read(test_mode_buf, DEFAULT_BUF_LENGTH);
++                    } else
++#endif
+                     n_read = fread(test_mode_buf, 1, DEFAULT_BUF_LENGTH, in_file);
+ 
+                     // Convert CS8 file to CU8 buffer

@@ -24,6 +24,20 @@ echo "Using $(emcc --version | head -1)"
 
 mkdir -p "$OUT"
 
+# --- apply the async-stdin patch to the vendored submodule -------------------
+# Replaces the blocking fread() on stdin with a suspending host read so the
+# decoder can run on the main thread with no SharedArrayBuffer (see the patch
+# header and src/decoder.ts). Idempotent: skipped if already applied.
+PATCH="$ROOT/wasm/stdin-async.patch"
+if [[ -f "$PATCH" ]]; then
+  if git -C "$SRC" apply --reverse --check "$PATCH" >/dev/null 2>&1; then
+    echo "async-stdin patch already applied"
+  else
+    echo "applying async-stdin patch"
+    git -C "$SRC" apply "$PATCH"
+  fi
+fi
+
 # --- linker flags ------------------------------------------------------------
 # We drive main() ourselves from the worker via callMain(), so don't auto-run.
 # A custom stdin stream (ring buffer) feeds CU8 samples; stdout carries JSON.
@@ -34,9 +48,10 @@ EM_LDFLAGS=(
   -sINVOKE_RUN=0          # don't run main() on load
   -sEXIT_RUNTIME=0        # keep runtime alive after callMain returns
   -sALLOW_MEMORY_GROWTH=1
-  -sFORCE_FILESYSTEM=1    # we install a custom stdin device at runtime
+  -sJSPI                  # suspend the wasm on the async stdin read (no SAB/worker)
+  -sFORCE_FILESYSTEM=1    # rtl_433 still touches the FS for stdin/stdout setup
   -sEXPORTED_RUNTIME_METHODS=callMain,FS,stringToNewUTF8,getValue,setValue,HEAPU8
-  -sENVIRONMENT=web,worker
+  -sENVIRONMENT=web
   -O2
 )
 
