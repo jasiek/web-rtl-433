@@ -59,6 +59,28 @@ changing the frequency field.
 > `Cross-Origin-Embedder-Policy` headers so `SharedArrayBuffer` works. Any host
 > you deploy to must send the same headers.
 
+## Deploy to GitHub Pages
+
+The repo ships a workflow (`.github/workflows/deploy.yml`) that builds the wasm
+with Emscripten in CI and publishes `dist/` to Pages. To wire it up:
+
+1. **Push the repo to GitHub.**
+2. **Settings → Pages → Build and deployment → Source: GitHub Actions.**
+3. **Custom domain:** the site is configured for `web-rtl-433.jasiek.me` via
+   `public/CNAME`. Add a DNS record in the `jasiek.me` zone:
+   ```
+   CNAME   web-rtl-433   <your-github-username>.github.io
+   ```
+   Then in Settings → Pages set the custom domain and enable **Enforce HTTPS**
+   (WebUSB requires HTTPS; the custom domain gets a free certificate).
+4. Push to `main`/`master` — the Action builds and deploys automatically.
+
+**Cross-origin isolation:** GitHub Pages can't set `COOP`/`COEP` headers, which
+`SharedArrayBuffer` needs. A bundled service worker
+([`coi-serviceworker`](https://github.com/gzuidhof/coi-serviceworker), in
+`public/`) injects them and reloads once on first visit. To deploy elsewhere,
+either keep that service worker or have the host send the headers directly.
+
 ## Layout
 
 | Path                    | What                                                          |

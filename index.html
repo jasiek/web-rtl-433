@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>web-rtl-433 &mdash; decode 433 MHz in the browser</title>
+    <!-- Enables cross-origin isolation (SharedArrayBuffer) on hosts that can't
+         set COOP/COEP headers, e.g. GitHub Pages. Reloads once on first visit. -->
+    <script src="/coi-serviceworker.js"></script>
     <style>
       :root {
         --bg: #0f1115;
