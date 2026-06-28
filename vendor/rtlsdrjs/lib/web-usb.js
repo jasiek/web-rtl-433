@@ -61,7 +61,10 @@ USB.requestDevice = async function(filters) {
 };
 
 USB.getDevices = async function(filters, callback) {
-  const usbDevices = navigator.usb.getDevices();
+  // navigator.usb.getDevices() is async; the original forgot to await it,
+  // which made RtlSdr.getDevices() throw. Needed for gesture-free re-attach
+  // after a USB re-enumeration (getDevices returns already-permitted devices).
+  const usbDevices = await navigator.usb.getDevices();
   const devices = [];
 
   usbDevices.forEach((usbDevice) => {
