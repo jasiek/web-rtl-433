@@ -9,26 +9,31 @@ the real [`rtl_433`](https://github.com/merbanan/rtl_433) decoder, compiled to
 ## How it works
 
 ```
- ┌─────────────┐  WebUSB   ┌────────────────────┐  SharedArrayBuffer  ┌──────────────────────┐
- │  RTL-SDR    │ ────────▶ │  main thread        │  ring buffer (CU8)  │  Web Worker          │
- │  (RTL2832U) │  CU8 IQ   │  rtlsdrjs sample    │ ──────────────────▶ │  rtl_433.wasm        │
- └─────────────┘           │  pump @ 433.92 MHz  │                     │  reads "stdin" (-r -)│
-                           └────────────────────┘                     │  emits JSON events   │
-                                      ▲                                └──────────┬───────────┘
-                                      │            decoded events (postMessage)   │
-                                      └───────────────────────────────────────────┘
+ ┌─────────────┐  WebUSB   ┌─────────────────────────────────────────────────────┐
+ │  RTL-SDR    │ ────────▶ │  main thread                                        │
+ │  (RTL2832U) │  CU8 IQ   │  rtlsdrjs pump ─push─▶ SampleQueue ─read─▶ rtl_433.wasm
+ └─────────────┘           │  @ 433.92 MHz          (in-thread)    (JSPI suspend) │
+                           │                                        emits JSON ───┘
+                           └─────────────────────────────────────────────────────┘
 ```
+
+Everything runs on the **main thread** — no Web Worker, no `SharedArrayBuffer`,
+no cross-origin isolation.
 
 - **WebUSB → samples:** [`rtlsdrjs`](https://github.com/sandeepmistry/rtlsdrjs)
   (vendored) programs the RTL2832U and reads raw 8-bit IQ samples (CU8) — exactly
   the format `rtl_433` wants, no conversion.
-- **Transport:** a `SharedArrayBuffer` ring buffer hands samples to the worker.
-  The producer (main thread) never blocks; the consumer (worker) blocks on
-  `Atomics.wait`, which is what `rtl_433`'s blocking `fread()` needs.
+- **Transport:** a plain in-thread async byte queue (`src/sample-queue.ts`) hands
+  samples to the decoder. The pump never blocks; the decoder's `read()` resolves
+  synchronously when bytes are buffered, or returns a Promise when the queue is
+  empty.
 - **Decode:** upstream `rtl_433` is built with Emscripten (`-DENABLE_RTLSDR=OFF
-  -DENABLE_SOAPYSDR=OFF`, file-input only). A custom Emscripten character device
-  feeds the ring buffer to `rtl_433 -r - -F json`; decoded events come back as
-  JSON on stdout and are posted to the page.
+  -DENABLE_SOAPYSDR=OFF`, file-input only) **plus JSPI** (`-sJSPI`). A small patch
+  (`wasm/stdin-async.patch`) replaces the blocking `fread()` on stdin with a
+  suspending host read: when the queue is empty the wasm stack suspends and yields
+  to the event loop (so the USB pump and UI keep running), then resumes when the
+  next samples arrive. `rtl_433`'s main loop "never returns" yet nothing blocks.
+  Decoded events come back as JSON on stdout and render straight into the table.
 
 ## Requirements
 
@@ -55,9 +60,10 @@ Click **Connect SDR**, pick your dongle in the browser prompt, and decoded
 devices stream into the table. Tune to other ISM bands (315/868/915 MHz) by
 changing the frequency field.
 
-> The dev/preview servers send `Cross-Origin-Opener-Policy` and
-> `Cross-Origin-Embedder-Policy` headers so `SharedArrayBuffer` works. Any host
-> you deploy to must send the same headers.
+> No special hosting headers are required — the decoder uses JSPI on the main
+> thread, so there's no `SharedArrayBuffer` and no need for `COOP`/`COEP` or
+> cross-origin isolation. The browser must support WebAssembly **JSPI** (stack
+> switching), which ships in current Chromium (Chrome/Edge 137+).
 
 ## Deploy to GitHub Pages
 
@@ -75,23 +81,22 @@ with Emscripten in CI and publishes `dist/` to Pages. To wire it up:
    (WebUSB requires HTTPS; the custom domain gets a free certificate).
 4. Push to `main`/`master` — the Action builds and deploys automatically.
 
-**Cross-origin isolation:** GitHub Pages can't set `COOP`/`COEP` headers, which
-`SharedArrayBuffer` needs. A bundled service worker
-([`coi-serviceworker`](https://github.com/gzuidhof/coi-serviceworker), in
-`public/`) injects them and reloads once on first visit. To deploy elsewhere,
-either keep that service worker or have the host send the headers directly.
+**No special headers needed:** because there's no `SharedArrayBuffer`, the site
+needs no `COOP`/`COEP` headers or cross-origin isolation, so it works on GitHub
+Pages (or any static host) as-is — just serve over HTTPS for WebUSB.
 
 ## Layout
 
 | Path                    | What                                                          |
 | ----------------------- | ------------------------------------------------------------ |
-| `wasm/build.sh`         | Compiles `vendor/rtl_433` to `public/rtl_433.{js,wasm}`       |
-| `src/sdr.ts`            | WebUSB sample pump (wraps `rtlsdrjs`)                         |
-| `src/ring-buffer.ts`    | SharedArrayBuffer SPSC ring buffer                           |
-| `src/decoder-worker.ts` | Loads the wasm, feeds it the stream, surfaces JSON events    |
-| `src/main.ts`           | UI + lifecycle                                                |
-| `vendor/rtl_433`        | upstream decoder (submodule)                                  |
-| `vendor/rtlsdrjs`       | WebUSB RTL2832U driver (submodule)                            |
+| `wasm/build.sh`          | Compiles `vendor/rtl_433` to `public/rtl_433.{js,wasm}` (JSPI) |
+| `wasm/stdin-async.patch` | Makes rtl_433's stdin read suspend instead of blocking        |
+| `src/sdr.ts`             | WebUSB sample pump (wraps `rtlsdrjs`)                          |
+| `src/sample-queue.ts`    | In-thread async byte queue (SDR → decoder)                    |
+| `src/decoder.ts`         | Loads the wasm, feeds it the stream, surfaces JSON events     |
+| `src/main.ts`            | UI + lifecycle                                                 |
+| `vendor/rtl_433`         | upstream decoder (submodule)                                   |
+| `vendor/rtlsdrjs`        | WebUSB RTL2832U driver (submodule)                            |
 
 ## Credits
 

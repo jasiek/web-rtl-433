@@ -1,8 +1,13 @@
 // Thin wrapper around rtlsdrjs: request an RTL-SDR over WebUSB, tune it, and
-// pump raw CU8 IQ samples into the shared ring buffer for the decoder worker.
+// pump raw CU8 IQ samples into the sample queue for the in-thread decoder.
 import RtlSdr from "rtlsdrjs";
 import type { RtlSdrDevice } from "rtlsdrjs";
-import { RingProducer } from "./ring-buffer";
+
+/** Where pumped samples go: satisfied by SampleQueue. */
+export interface SampleSink {
+  push(bytes: Uint8Array): void;
+  overflows(): number;
+}
 
 export interface SdrOptions {
   centerFrequency: number; // Hz
@@ -39,7 +44,7 @@ export class Sdr {
 
   /** Continuously read samples and feed them to the ring buffer until stopped. */
   async pump(
-    producer: RingProducer,
+    sink: SampleSink,
     onOverflow?: (count: number) => void,
     onWarn?: (message: string) => void,
   ): Promise<void> {
@@ -66,9 +71,9 @@ export class Sdr {
       }
       if (!this.running) break;
       const bytes = new Uint8Array(buf);
-      producer.push(bytes);
+      sink.push(bytes);
       this.onSamples?.(bytes);
-      const o = producer.overflows();
+      const o = sink.overflows();
       if (o !== lastOverflow) {
         lastOverflow = o;
         onOverflow?.(o);

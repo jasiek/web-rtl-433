@@ -1,8 +1,10 @@
 // Page controller: wires the Connect button to the SDR sample pump and the
-// decoder worker, and renders decoded events into the table.
+// in-thread rtl_433 (wasm/JSPI) decoder, and renders decoded events into the
+// table. No Web Worker / SharedArrayBuffer: the wasm suspends on each stdin read
+// (JSPI), so producer, consumer and UI all share the main thread.
 import { Sdr } from "./sdr";
-import { createRingSAB, RingProducer } from "./ring-buffer";
-import type { WorkerInbound, WorkerOutbound } from "./decoder-worker";
+import { SampleQueue } from "./sample-queue";
+import { runDecoder } from "./decoder";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -24,21 +26,23 @@ const els = {
   unsupported: $<HTMLElement>("unsupported"),
 };
 
-const RING_CAPACITY = 1 << 23; // 8 MiB: absorbs transient stalls so we never drop samples
+const QUEUE_CAPACITY = 1 << 23; // 8 MiB: absorbs transient stalls so we rarely drop samples
 
 const sdr = new Sdr();
-let worker: Worker | null = null;
+let queue: SampleQueue | null = null;
 let eventCount = 0;
 const seenDevices = new Set<string>();
 let active: { centerFrequency: number; sampleRate: number } | null = null;
 
 // --- environment checks ------------------------------------------------------
 function checkSupport(): string | null {
-  if (typeof SharedArrayBuffer === "undefined" || !self.crossOriginIsolated) {
-    return "This page is not cross-origin isolated, so SharedArrayBuffer is unavailable. Serve it with COOP/COEP headers (the dev server already does).";
-  }
   if (!("usb" in navigator)) {
     return "WebUSB is not available in this browser. Use a Chromium-based browser (Chrome, Edge) over HTTPS or localhost.";
+  }
+  // The decoder wasm is built with JSPI (stack switching) to suspend on each
+  // stdin read; without it the wasm can't instantiate.
+  if (typeof (WebAssembly as any).Suspending !== "function") {
+    return "This browser lacks WebAssembly JSPI (stack switching), which the decoder needs. Use a recent Chromium-based browser.";
   }
   return null;
 }
@@ -129,34 +133,36 @@ async function connect() {
     return;
   }
 
-  // Shared ring buffer + decoder worker.
-  const sab = createRingSAB(RING_CAPACITY);
-  const producer = new RingProducer(sab);
+  // In-thread sample queue feeding the wasm decoder (no SharedArrayBuffer).
+  queue = new SampleQueue(QUEUE_CAPACITY);
+  const q = queue;
 
-  worker = new Worker(new URL("./decoder-worker.ts", import.meta.url), { type: "module" });
-  worker.onmessage = (ev: MessageEvent<WorkerOutbound>) => {
-    const m = ev.data;
-    if (m.type === "events") addEvents(m.payload);
-    else if (m.type === "log") logLines(m.lines);
-    else if (m.type === "ready") {
-      setStatus(`Listening @ ${(actual.centerFrequency / 1e6).toFixed(3)} MHz`, "on");
-      active = actual;
-      els.record.disabled = false;
-      // Only start pumping once the decoder is actually draining the ring buffer,
-      // and flush any samples the dongle buffered during wasm load.
-      startPump(producer);
-    } else if (m.type === "fatal") {
-      setStatus("Decoder error", "err");
-      logLine(m.message);
-    }
-  };
-  const startMsg: WorkerInbound = {
-    type: "start",
-    sab,
-    sampleRate: actual.sampleRate,
-    verbose: els.verbose.checked,
-  };
-  worker.postMessage(startMsg);
+  try {
+    await runDecoder(q, actual.sampleRate, els.verbose.checked, {
+      onEvents: addEvents,
+      onLog: logLines,
+      onReady: () => {
+        setStatus(`Listening @ ${(actual.centerFrequency / 1e6).toFixed(3)} MHz`, "on");
+        active = actual;
+        els.record.disabled = false;
+        // Only start pumping once the decoder is draining the queue, and flush
+        // any samples the dongle buffered while the wasm was loading.
+        startPump(q);
+      },
+      onExit: (message) => {
+        // Expected on Stop (queue closed -> EOF); only surface real errors.
+        if (active) {
+          setStatus("Decoder stopped", "err");
+          logLine(message);
+        }
+      },
+    });
+  } catch (e: any) {
+    setStatus("Decoder failed", "err");
+    logLine(`decoder error: ${e?.message ?? e}`);
+    els.connect.disabled = false;
+    return;
+  }
 
   els.stop.disabled = false;
   logLine(
@@ -166,13 +172,13 @@ async function connect() {
   );
 }
 
-// Started only once the worker reports it's draining the ring (see onmessage).
-async function startPump(producer: RingProducer) {
+// Started only once the decoder reports it's draining the queue (see onReady).
+async function startPump(sink: SampleQueue) {
   // Discard samples the dongle buffered while the wasm was loading.
   await sdr.resetBuffer().catch(() => {});
   sdr
     .pump(
-      producer,
+      sink,
       (n) => {
         els.overflow.textContent = String(n);
       },
@@ -187,10 +193,12 @@ async function startPump(producer: RingProducer) {
 async function stop() {
   els.stop.disabled = true;
   els.record.disabled = true;
-  await sdr.stop();
-  worker?.terminate();
-  worker = null;
   active = null;
+  await sdr.stop();
+  // Closing the queue resolves the decoder's pending read as EOF, so rtl_433's
+  // main loop returns and the wasm decoder unwinds cleanly.
+  queue?.close();
+  queue = null;
   setStatus("Stopped", "idle");
   els.connect.disabled = false;
 }
