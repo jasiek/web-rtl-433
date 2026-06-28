@@ -171,10 +171,17 @@ async function startPump(producer: RingProducer) {
   // Discard samples the dongle buffered while the wasm was loading.
   await sdr.resetBuffer().catch(() => {});
   sdr
-    .pump(producer, (n) => {
-      els.overflow.textContent = String(n);
-    })
-    .catch((e) => logLine(`pump stopped: ${e?.message ?? e}`));
+    .pump(
+      producer,
+      (n) => {
+        els.overflow.textContent = String(n);
+      },
+      (warning) => logLine(warning),
+    )
+    .catch((e) => {
+      setStatus("USB read failed", "err");
+      logLine(`pump stopped: ${e?.message ?? e}`);
+    });
 }
 
 async function stop() {

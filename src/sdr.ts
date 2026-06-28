@@ -15,6 +15,10 @@ export interface SdrOptions {
 // balance between USB overhead and latency at 250 kHz.
 const SAMPLES_PER_READ = 16 * 1024;
 
+// How many back-to-back USB read failures to tolerate before giving up. A
+// handful of transient transferIn errors is normal; sustained failure is not.
+const MAX_CONSECUTIVE_USB_ERRORS = 10;
+
 export class Sdr {
   private device: RtlSdrDevice | null = null;
   private running = false;
@@ -34,12 +38,32 @@ export class Sdr {
   }
 
   /** Continuously read samples and feed them to the ring buffer until stopped. */
-  async pump(producer: RingProducer, onOverflow?: (count: number) => void): Promise<void> {
+  async pump(
+    producer: RingProducer,
+    onOverflow?: (count: number) => void,
+    onWarn?: (message: string) => void,
+  ): Promise<void> {
     if (!this.device) throw new Error("SDR not connected");
     this.running = true;
     let lastOverflow = 0;
+    let consecutiveErrors = 0;
     while (this.running) {
-      const buf = await this.device.readSamples(SAMPLES_PER_READ);
+      let buf: ArrayBuffer;
+      try {
+        buf = await this.device.readSamples(SAMPLES_PER_READ);
+        consecutiveErrors = 0;
+      } catch (e: any) {
+        if (!this.running) break;
+        // transferIn errors are usually transient USB hiccups. Recover by
+        // resetting the device buffer and retrying; only give up if they
+        // persist, which points at a real problem (unplugged, contention).
+        consecutiveErrors++;
+        if (consecutiveErrors > MAX_CONSECUTIVE_USB_ERRORS) throw e;
+        onWarn?.(`USB read error (retry ${consecutiveErrors}): ${e?.message ?? e}`);
+        await this.device.resetBuffer().catch(() => {});
+        await new Promise((r) => setTimeout(r, 50));
+        continue;
+      }
       if (!this.running) break;
       const bytes = new Uint8Array(buf);
       producer.push(bytes);
