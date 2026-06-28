@@ -19,6 +19,9 @@ export class Sdr {
   private device: RtlSdrDevice | null = null;
   private running = false;
 
+  /** Optional tap on the raw CU8 stream, used for diagnostic recording. */
+  onSamples: ((bytes: Uint8Array) => void) | undefined;
+
   /** Must be called from a user gesture (WebUSB requires transient activation). */
   async connect(opts: SdrOptions): Promise<{ sampleRate: number; centerFrequency: number }> {
     const device = await RtlSdr.requestDevice();
@@ -38,7 +41,9 @@ export class Sdr {
     while (this.running) {
       const buf = await this.device.readSamples(SAMPLES_PER_READ);
       if (!this.running) break;
-      producer.push(new Uint8Array(buf));
+      const bytes = new Uint8Array(buf);
+      producer.push(bytes);
+      this.onSamples?.(bytes);
       const o = producer.overflows();
       if (o !== lastOverflow) {
         lastOverflow = o;
@@ -50,6 +55,11 @@ export class Sdr {
   async setCenterFrequency(freq: number): Promise<number> {
     if (!this.device) throw new Error("SDR not connected");
     return this.device.setCenterFrequency(freq);
+  }
+
+  async resetBuffer(): Promise<void> {
+    if (!this.device) throw new Error("SDR not connected");
+    return this.device.resetBuffer();
   }
 
   async stop(): Promise<void> {

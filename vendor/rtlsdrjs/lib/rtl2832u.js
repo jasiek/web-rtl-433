@@ -154,7 +154,12 @@ function RTL2832U(conn, ppm, opt_gain) {
   async function setSampleRate(rate) {
     var ratio = Math.floor(XTAL_FREQ * (1 << 22) / rate);
     ratio &= 0x0ffffffc;
-    var realRate = Math.floor(XTAL_FREQ * (1 << 22) / ratio);
+    // The register gets `ratio`, but the *actual* resampling ratio propagates
+    // bit 27 into bit 28 (matching librtlsdr's real_rsamp_ratio). Without this
+    // the reported rate is wrong (e.g. 250000 -> 562500), which silently breaks
+    // any consumer that trusts the returned rate (pulse timing, etc.).
+    var realRatio = ratio | ((ratio & 0x08000000) << 1);
+    var realRate = Math.floor(XTAL_FREQ * (1 << 22) / realRatio);
     var ppmOffset = -1 * Math.floor(ppm * (1 << 24) / 1000000);
     await com.writeEach([
       [CMD.DEMODREG, 1, 0x9f, (ratio >> 16) & 0xffff, 2],

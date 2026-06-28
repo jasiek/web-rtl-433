@@ -4,3 +4,6 @@ wasm/build/
 # Emscripten build artifacts (regenerate with `npm run build:wasm`)
 public/rtl_433.js
 public/rtl_433.wasm
+
+# Diagnostic IQ captures from the Record button
+capture_*.cu8
