@@ -3,8 +3,9 @@
 #
 # Output: public/rtl_433.js + public/rtl_433.wasm  (Emscripten module, no auto-run)
 #
-# Requires the Emscripten SDK. Either have `emcc` on PATH, or set EMSDK to the
-# emsdk checkout (this script will source emsdk_env.sh for you).
+# Requires the Emscripten SDK, pinned in .tool-versions and managed by asdf
+# (`asdf install emsdk`). The script sources the SDK's emsdk_env.sh for you. If
+# emcc is already on PATH it's used as-is; a manual checkout works via $EMSDK.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -13,14 +14,29 @@ BUILD="$ROOT/wasm/build"
 OUT="$ROOT/public"
 
 # --- locate Emscripten -------------------------------------------------------
-if ! command -v emcc >/dev/null 2>&1; then
-  if [[ -n "${EMSDK:-}" && -f "$EMSDK/emsdk_env.sh" ]]; then
+# Resolve the emsdk install (asdf-managed by default, else a manual $EMSDK).
+# emcc shells out to python, so EMSDK_PYTHON must point at the SDK's bundled
+# interpreter. We then source the SDK's env unconditionally: this puts the real
+# emcc/emcmake binaries ahead of asdf's shims on PATH. The shims matter because
+# asdf-emsdk's shim sanitizes the environment, which makes emcmake's `cmake`
+# lookup fail; the real binaries don't. Sourcing also keeps emcc and its
+# matching wasm-ld self-consistent, avoiding a half-updated checkout's skew.
+EMSDK_HOME="${EMSDK:-}"
+if [[ -z "$EMSDK_HOME" ]] && command -v asdf >/dev/null 2>&1; then
+  EMSDK_HOME="$(asdf where emsdk 2>/dev/null || true)"
+fi
+if [[ -n "$EMSDK_HOME" ]]; then
+  if [[ -z "${EMSDK_PYTHON:-}" ]]; then
+    EMSDK_PYTHON="$(ls -d "$EMSDK_HOME"/python/*/bin/python3 2>/dev/null | head -1 || true)"
+    [[ -n "$EMSDK_PYTHON" ]] && export EMSDK_PYTHON
+  fi
+  if [[ -f "$EMSDK_HOME/emsdk_env.sh" ]]; then
     # shellcheck disable=SC1091
-    source "$EMSDK/emsdk_env.sh" >/dev/null 2>&1
+    source "$EMSDK_HOME/emsdk_env.sh" >/dev/null 2>&1
   fi
 fi
-command -v emcc >/dev/null 2>&1 || { echo "error: emcc not found. Install emsdk and/or set EMSDK." >&2; exit 1; }
-echo "Using $(emcc --version | head -1)"
+command -v emcc >/dev/null 2>&1 || { echo "error: emcc not found. Run 'asdf install emsdk' (version pinned in .tool-versions) or set EMSDK." >&2; exit 1; }
+echo "Using $(emcc --version 2>/dev/null | head -1)"
 
 mkdir -p "$OUT"
 
