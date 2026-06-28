@@ -1,0 +1,20 @@
+{
+  "name": "web-rtl-433",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "rtl_433 in the browser: decode 433.92 MHz ISM-band devices from an RTL-SDR over WebUSB, using upstream rtl_433 compiled to WebAssembly.",
+  "scripts": {
+    "build:wasm": "bash wasm/build.sh",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "rtlsdrjs": "file:vendor/rtlsdrjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vite": "^5.4.0"
+  }
+}

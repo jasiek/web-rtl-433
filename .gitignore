@@ -1,0 +1,6 @@
+node_modules/
+dist/
+wasm/build/
+# Emscripten build artifacts (regenerate with `npm run build:wasm`)
+public/rtl_433.js
+public/rtl_433.wasm
